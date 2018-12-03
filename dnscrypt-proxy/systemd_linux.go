@@ -4,12 +4,15 @@ import (
 	"net"
 
 	"github.com/coreos/go-systemd/activation"
-	"github.com/coreos/go-systemd/daemon"
 	"github.com/jedisct1/dlog"
 )
 
 func (proxy *Proxy) SystemDListeners() error {
 	files := activation.Files(true)
+
+	if len(files) > 0 && (len(proxy.userName) > 0 || proxy.child) {
+		dlog.Fatal("Systemd activated sockets are incompatible with privilege dropping. Remove activated sockets and fill `listen_addresses` in the dnscrypt-proxy configuration file instead.")
+	}
 
 	for i, file := range files {
 		if listener, err := net.FileListener(file); err == nil {
@@ -23,8 +26,4 @@ func (proxy *Proxy) SystemDListeners() error {
 	}
 
 	return nil
-}
-
-func SystemDNotify() {
-	daemon.SdNotify(false, "READY=1")
 }

@@ -1,3 +1,41 @@
+* Version 2.0.19
+ - The value for `netprobe_timeout` was read from the command-line, but
+not from the configuration file any more. This is a regression introduced
+in the previous version, that has been fixed.
+ - The default value for netprobe timeouts has been raised to 60 seconds.
+ - A hash of the body is added to query parameters when sending DoH
+queries with the POST method in order to work around badly configured
+proxies.
+
+* Version 2.0.18
+ - Official builds now support TLS 1.3.
+ - The timeout for the initial connectivity check can now be set from
+the command line.
+ - An `Accept:` header is now always sent with `GET` queries.
+ - BOMs are now ignored in configuration files.
+ - In addition to SOCKS, HTTP and HTTPS proxies are now supported for
+DoH servers.
+
+* Version 2.0.17
+ - Go >= 1.11 is now supported
+ - The flipside is that Windows XP is not supported any more :(
+ - When dropping privileges, there is no supervisor process any more.
+ - DNS options used to be cleared from DNS queries, with the exception
+of flags and payload sizes. This is not the case any more.
+ - DoH queries are smaller, since workarounds are not required any more
+after Google updated their implementation.
+
+* Version 2.0.16
+ - On Unix-like systems, the server can run as an unprivileged user,
+and the main process will automatically restart if an error occurs.
+ - pledge() on OpenBSD.
+ - New "offline" mode to serve queries locally without contacting any
+upstream servers. This can be especially useful along with the
+cloaking module for local development.
+ - New logo.
+ - TTL of OPT records is properly ignored by the caching module.
+ - The proxy doesn't quit any more if new TCP connections cannot be
+created.
 
 * Version 2.0.15
  - Support for proxies (HTTP/SOCKS) was added. All it takes to route

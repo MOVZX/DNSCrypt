@@ -12,7 +12,7 @@ import (
 )
 
 const (
-	AppVersion            = "2.0.15"
+	AppVersion            = "2.0.19"
 	DefaultConfigFileName = "dnscrypt-proxy.toml"
 )
 
@@ -43,7 +43,7 @@ func main() {
 		dlog.Debug(err)
 	}
 	app.proxy = NewProxy()
-
+	_ = ServiceManagerStartNotify()
 	if err := ConfigLoad(&app.proxy, svcFlag); err != nil {
 		dlog.Fatal(err)
 	}
@@ -96,8 +96,8 @@ func (app *App) Start(service service.Service) error {
 }
 
 func (app *App) AppMain(proxy *Proxy) {
-	proxy.StartProxy()
 	pidfile.Write()
+	proxy.StartProxy()
 	<-app.quit
 	dlog.Notice("Quit signal received...")
 	app.wg.Done()

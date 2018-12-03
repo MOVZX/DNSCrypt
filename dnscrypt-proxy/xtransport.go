@@ -3,11 +3,12 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/sha512"
 	"crypto/tls"
 	"encoding/base64"
+	"encoding/hex"
 	"errors"
 	"fmt"
-	"io"
 	"io/ioutil"
 	"net"
 	"net/http"
@@ -43,6 +44,7 @@ type XTransport struct {
 	tlsDisableSessionTickets bool
 	tlsCipherSuite           []uint16
 	proxyDialer              *netproxy.Dialer
+	httpProxyFunction        func(*http.Request) (*url.URL, error)
 }
 
 var DefaultKeepAlive = 5 * time.Second
@@ -104,6 +106,9 @@ func (xTransport *XTransport) rebuildTransport() {
 			}
 		},
 	}
+	if xTransport.httpProxyFunction != nil {
+		transport.Proxy = xTransport.httpProxyFunction
+	}
 	if xTransport.tlsDisableSessionTickets || xTransport.tlsCipherSuite != nil {
 		tlsClientConfig := tls.Config{
 			SessionTicketsDisabled: xTransport.tlsDisableSessionTickets,
@@ -159,7 +164,7 @@ func (xTransport *XTransport) resolve(dnsClient *dns.Client, host string, resolv
 	return nil, err
 }
 
-func (xTransport *XTransport) Fetch(method string, url *url.URL, accept string, contentType string, body *io.ReadCloser, timeout time.Duration, padding *string) (*http.Response, time.Duration, error) {
+func (xTransport *XTransport) Fetch(method string, url *url.URL, accept string, contentType string, body *[]byte, timeout time.Duration, padding *string) (*http.Response, time.Duration, error) {
 	if timeout <= 0 {
 		timeout = xTransport.timeout
 	}
@@ -174,6 +179,14 @@ func (xTransport *XTransport) Fetch(method string, url *url.URL, accept string, 
 	if padding != nil {
 		header["X-Pad"] = []string{*padding}
 	}
+	if body != nil {
+		h := sha512.Sum512(*body)
+		qs := url.Query()
+		qs.Add("body_hash", hex.EncodeToString(h[:32]))
+		url2 := *url
+		url2.RawQuery = qs.Encode()
+		url = &url2
+	}
 	req := &http.Request{
 		Method: method,
 		URL:    url,
@@ -181,7 +194,9 @@ func (xTransport *XTransport) Fetch(method string, url *url.URL, accept string, 
 		Close:  false,
 	}
 	if body != nil {
-		req.Body = *body
+		req.ContentLength = int64(len(*body))
+		bc := ioutil.NopCloser(bytes.NewReader(*body))
+		req.Body = bc
 	}
 	var err error
 	host := url.Host
@@ -252,12 +267,12 @@ func (xTransport *XTransport) Fetch(method string, url *url.URL, accept string, 
 }
 
 func (xTransport *XTransport) Get(url *url.URL, accept string, timeout time.Duration) (*http.Response, time.Duration, error) {
-	return xTransport.Fetch("GET", url, "", "", nil, timeout, nil)
+	return xTransport.Fetch("GET", url, accept, "", nil, timeout, nil)
 }
 
-func (xTransport *XTransport) Post(url *url.URL, accept string, contentType string, body []byte, timeout time.Duration, padding *string) (*http.Response, time.Duration, error) {
-	bc := ioutil.NopCloser(bytes.NewReader(body))
-	return xTransport.Fetch("POST", url, accept, contentType, &bc, timeout, padding)
+func (xTransport *XTransport) Post(url *url.URL, accept string, contentType string, body *[]byte, timeout time.Duration, padding *string) (*http.Response, time.Duration, error) {
+
+	return xTransport.Fetch("POST", url, accept, contentType, body, timeout, padding)
 }
 
 func (xTransport *XTransport) DoHQuery(useGet bool, url *url.URL, body []byte, timeout time.Duration) (*http.Response, time.Duration, error) {
@@ -268,16 +283,12 @@ func (xTransport *XTransport) DoHQuery(useGet bool, url *url.URL, body []byte, t
 		qs := url.Query()
 		qs.Add("ct", "")
 		encBody := base64.RawURLEncoding.EncodeToString(body)
-		qs.Add("body", encBody)
 		qs.Add("dns", encBody)
-		if padding != nil {
-			qs.Add("random_padding", *padding)
-		}
 		url2 := *url
 		url2.RawQuery = qs.Encode()
 		return xTransport.Get(&url2, dataType, timeout)
 	}
-	return xTransport.Post(url, dataType, dataType, body, timeout, padding)
+	return xTransport.Post(url, dataType, dataType, &body, timeout, padding)
 }
 
 func (xTransport *XTransport) makePad(padLen int) *string {

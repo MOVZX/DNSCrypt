@@ -1,4 +1,4 @@
-// +build !windows
+// +build !windows,!linux
 
 package main
 
@@ -7,13 +7,20 @@ import (
 	"os/exec"
 	"os/user"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"syscall"
 
 	"github.com/jedisct1/dlog"
 )
 
+var cmd *exec.Cmd
+
 func (proxy *Proxy) dropPrivilege(userStr string, fds []*os.File) {
+	currentUser, err := user.Current()
+	if err != nil && currentUser.Uid != "0" {
+		dlog.Fatal("Root privileges are required in order to switch to a different user. Maybe try again with 'sudo'")
+	}
 	user, err := user.Lookup(userStr)
 	args := os.Args
 
@@ -37,21 +44,42 @@ func (proxy *Proxy) dropPrivilege(userStr string, fds []*os.File) {
 		dlog.Fatal(err)
 	}
 
-	// remove arg[0]
-	copy(args[0:], args[0+1:])
-	args[len(args)-1] = ""
-	args = args[:len(args)-1]
+	ServiceManagerReadyNotify()
+
 	args = append(args, "-child")
 
-	cmd := exec.Command(path, args...)
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-	cmd.ExtraFiles = fds
-	cmd.SysProcAttr = &syscall.SysProcAttr{}
-	cmd.SysProcAttr.Credential = &syscall.Credential{Uid: uint32(uid), Gid: uint32(gid)}
 	dlog.Notice("Dropping privileges")
-	if err := cmd.Run(); err != nil {
-		dlog.Fatal(err)
+	runtime.LockOSThread()
+	if _, _, rcode := syscall.RawSyscall(syscall.SYS_SETGROUPS, uintptr(0), uintptr(0), 0); rcode != 0 {
+		dlog.Fatalf("Unable to drop additional groups: %s", err)
 	}
-	os.Exit(0)
+	if _, _, rcode := syscall.RawSyscall(syscall.SYS_SETGID, uintptr(gid), 0, 0); rcode != 0 {
+		dlog.Fatalf("Unable to drop user privileges: %s", err)
+	}
+	if _, _, rcode := syscall.RawSyscall(syscall.SYS_SETUID, uintptr(uid), 0, 0); rcode != 0 {
+		dlog.Fatalf("Unable to drop user privileges: %s", err)
+	}
+	maxfd := uintptr(0)
+	for _, fd := range fds {
+		if fd.Fd() > maxfd {
+			maxfd = fd.Fd()
+		}
+	}
+	fdbase := maxfd + 1
+	for i, fd := range fds {
+		if _, _, rcode := syscall.RawSyscall(syscall.SYS_DUP2, fd.Fd(), fdbase+uintptr(i), 0); rcode != 0 {
+			dlog.Fatal("Unable to clone file descriptor")
+		}
+		if _, _, rcode := syscall.RawSyscall(syscall.SYS_FCNTL, fd.Fd(), syscall.F_SETFD, syscall.FD_CLOEXEC); rcode != 0 {
+			dlog.Fatal("Unable to set the close on exec flag")
+		}
+	}
+	for i := range fds {
+		if _, _, rcode := syscall.RawSyscall(syscall.SYS_DUP2, fdbase+uintptr(i), uintptr(i)+3, 0); rcode != 0 {
+			dlog.Fatal("Unable to reassign descriptor")
+		}
+	}
+	err = syscall.Exec(path, args, os.Environ())
+	dlog.Fatalf("Unable to reexecute [%s]: [%s]", path, err)
+	os.Exit(1)
 }

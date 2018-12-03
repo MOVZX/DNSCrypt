@@ -6,6 +6,7 @@ import (
 	"flag"
 	"fmt"
 	"net"
+	"net/http"
 	"net/url"
 	"os"
 	"path"
@@ -26,7 +27,7 @@ type Config struct {
 	ServerNames              []string `toml:"server_names"`
 	ListenAddresses          []string `toml:"listen_addresses"`
 	Daemonize                bool
-	Username                 string `toml:"username"`
+	UserName                 string `toml:"user_name"`
 	ForceTCP                 bool   `toml:"force_tcp"`
 	Timeout                  int    `toml:"timeout"`
 	KeepAlive                int    `toml:"keepalive"`
@@ -70,6 +71,8 @@ type Config struct {
 	TLSCipherSuite           []uint16                   `toml:"tls_cipher_suite"`
 	NetprobeAddress          string                     `toml:"netprobe_address"`
 	NetprobeTimeout          int                        `toml:"netprobe_timeout"`
+	OfflineMode              bool                       `toml:"offline_mode"`
+	HTTPProxyURL             string                     `toml:"http_proxy"`
 }
 
 func newConfig() Config {
@@ -103,7 +106,8 @@ func newConfig() Config {
 		TLSDisableSessionTickets: false,
 		TLSCipherSuite:           nil,
 		NetprobeAddress:          "9.9.9.9:53",
-		NetprobeTimeout:          30,
+		NetprobeTimeout:          60,
+		OfflineMode:              false,
 	}
 }
 
@@ -187,8 +191,8 @@ func ConfigLoad(proxy *Proxy, svcFlag *string) error {
 	jsonOutput := flag.Bool("json", false, "output list as JSON")
 	check := flag.Bool("check", false, "check the configuration file and exit")
 	configFile := flag.String("config", DefaultConfigFileName, "Path to the configuration file")
-	username := flag.String("username", "", "After binding to the port user privileges are dropped")
 	child := flag.Bool("child", false, "Invokes program as a child process")
+	netprobeTimeoutOverride := flag.Int("netprobe-timeout", 60, "Override the netprobe timeout")
 
 	flag.Parse()
 
@@ -239,10 +243,8 @@ func ConfigLoad(proxy *Proxy, svcFlag *string) error {
 	proxy.logMaxAge = config.LogMaxAge
 	proxy.logMaxBackups = config.LogMaxBackups
 
-	proxy.username = config.Username
-	if len(*username) > 0 {
-		proxy.username = *username
-	}
+	proxy.userName = config.UserName
+
 	proxy.child = *child
 	proxy.xTransport = NewXTransport()
 	proxy.xTransport.tlsDisableSessionTickets = config.TLSDisableSessionTickets
@@ -254,11 +256,18 @@ func ConfigLoad(proxy *Proxy, svcFlag *string) error {
 	proxy.xTransport.useIPv4 = config.SourceIPv4
 	proxy.xTransport.useIPv6 = config.SourceIPv6
 	proxy.xTransport.keepAlive = time.Duration(config.KeepAlive) * time.Second
+	if len(config.HTTPProxyURL) > 0 {
+		httpProxyURL, err := url.Parse(config.HTTPProxyURL)
+		if err != nil {
+			dlog.Fatalf("Unable to parse the HTTP proxy URL [%v]", config.HTTPProxyURL)
+		}
+		proxy.xTransport.httpProxyFunction = http.ProxyURL(httpProxyURL)
+	}
 
 	if len(config.Proxy) > 0 {
 		proxyDialerURL, err := url.Parse(config.Proxy)
 		if err != nil {
-			dlog.Fatalf("Unable to parse proxy url [%v]", config.Proxy)
+			dlog.Fatalf("Unable to parse the proxy URL [%v]", config.Proxy)
 		}
 		proxyDialer, err := netproxy.FromURL(proxyDialerURL, netproxy.Direct)
 		if err != nil {
@@ -396,13 +405,20 @@ func ConfigLoad(proxy *Proxy, svcFlag *string) error {
 		config.SourceDoH = true
 	}
 
-	netProbe(config.NetprobeAddress, config.NetprobeTimeout)
-
-	if err := config.loadSources(proxy); err != nil {
-		return err
-	}
-	if len(proxy.registeredServers) == 0 {
-		return errors.New("No servers configured")
+	netprobeTimeout := config.NetprobeTimeout
+	flag.Visit(func(flag *flag.Flag) {
+		if flag.Name == "netprobe-timeout" && netprobeTimeoutOverride != nil {
+			netprobeTimeout = *netprobeTimeoutOverride
+		}
+	})
+	netProbe(config.NetprobeAddress, netprobeTimeout)
+	if !config.OfflineMode {
+		if err := config.loadSources(proxy); err != nil {
+			return err
+		}
+		if len(proxy.registeredServers) == 0 {
+			return errors.New("No servers configured")
+		}
 	}
 	if *list || *listAll {
 		config.printRegisteredServers(proxy, *jsonOutput)
